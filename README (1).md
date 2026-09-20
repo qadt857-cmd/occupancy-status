@@ -31,20 +31,35 @@ the contents with this, then click **Publish**:
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == "qadt857@gmail.com";
+    }
+    function isApprovedViewer() {
+      return request.auth != null &&
+        request.auth.token.email in
+          get(/databases/$(database)/documents/config/access).data.viewers;
+    }
+
     match /occupancy/summary {
-      allow read: if true;
-      allow write: if request.auth != null
-                   && request.auth.token.email == "qadt857@gmail.com";
+      allow read: if isAdmin() || isApprovedViewer();
+      allow write: if isAdmin();
     }
     match /occupancy/units {
-      allow read, write: if request.auth != null
-                   && request.auth.token.email == "qadt857@gmail.com";
+      allow read, write: if isAdmin();
+    }
+    match /config/access {
+      allow read, write: if isAdmin();
     }
   }
 }
 ```
 
-(Already filled in with your admin email — just copy this block as-is.)
+(Already filled in with your admin email — just copy this block as-is. This
+version adds the approved-viewer list: nobody can even read the summary
+unless they're the admin, or their signed-in email is on the `viewers` list
+in `config/access` — which you manage from the "Manage access" button in
+the page itself, no need to touch Firestore's console.)
 
 This is what actually enforces "only I can upload, everyone else can only
 view the summary" — the same job the claude.ai `db` rules were doing before.
@@ -85,18 +100,27 @@ the path). Without this step, Google sign-in will fail on the live site.
 
 ## Using it
 
-- Anyone who opens the link sees the dashboard immediately — **no sign-in
-  needed** to view.
-- Click **Admin sign-in** (top right) and sign in with your Gmail — only
-  that exact address gets Upload/Export access, enforced by the Firestore
-  rules from Part 2, not just hidden buttons.
+- Anyone who opens the link is asked to **sign in with Google** first — no
+  one sees any data without signing in.
+- Only two kinds of signed-in accounts get in:
+  1. **You (admin)** — full access: Upload, Export, and the "Manage access" list.
+  2. **Approved viewers** — anyone whose email you've added to the approved
+     list can view the dashboard, nothing else.
+  Everyone else who signs in sees an "Access pending" screen and can't see
+  any data — this is enforced by the Firestore rules, not just hidden
+  buttons.
+- To approve someone: sign in as admin, click **"Manage access"** (top
+  right), type their Gmail address, click Add. They can then sign in and
+  view immediately (or click Refresh if they were already on the pending
+  screen). Remove access the same way, any time.
 - Upload the Excel file the same way as before (button or drag-and-drop).
-  Everyone viewing the page updates live, same as on claude.ai.
+  Everyone approved to view updates live, same as on claude.ai.
 
 ## What's different from the claude.ai version
 
 - No Google Drive auto-sync — manual upload only.
-- Viewers don't need any account at all now (an improvement — the claude.ai
-  version required a free Claude account to view).
+- Viewing now requires sign-in plus admin approval — stricter than the
+  claude.ai version, by request, since the repo (and therefore the link) is
+  public.
 - You now own and control the whole stack — Firebase's free tier comfortably
   covers a single small internal dashboard like this.

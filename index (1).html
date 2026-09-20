@@ -131,6 +131,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9m0 0l-4 4m4-4l4 4M5 3h14"/></svg>
       Upload Excel
     </button>
+    <button class="btn secondary" id="manageAccessBtn" style="display:none;">Manage access</button>
     <div class="admin-chip" id="adminChip">
       <button class="btn secondary" id="signInBtn">Admin sign-in</button>
     </div>
@@ -139,8 +140,31 @@
 <div id="dropOverlay" style="display:none; position:fixed; inset:0; z-index:50; background:rgba(32,48,45,0.55); align-items:center; justify-content:center; pointer-events:none;">
   <div style="background:var(--surface); border:2px dashed var(--brick); border-radius:8px; padding:40px 60px; font-family:var(--font-display); font-size:20px; color:var(--ink);">Drop the Excel file to update</div>
 </div>
+<div id="accessPanel" style="display:none; padding:16px clamp(16px,4vw,48px); border-bottom:1px solid var(--line); background:var(--surface);">
+  <div style="max-width:520px;">
+    <div class="section-head" style="margin-bottom:10px;"><h2 style="font-size:15px;">Approved viewers</h2></div>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <input type="email" id="accessEmailInput" placeholder="colleague@gmail.com" style="flex:1; font-family:var(--font-body); font-size:13px; padding:8px 10px; border-radius:3px; border:1px solid var(--line); background:var(--bg); color:var(--ink);">
+      <button class="btn secondary" id="accessAddBtn">Add</button>
+    </div>
+    <div id="accessList" style="display:flex; flex-direction:column; gap:6px; font-size:13px;"></div>
+  </div>
+</div>
 
 <main>
+  <div id="signedOutGate" class="empty" style="display:none;">
+    <h2>Sign in to view this dashboard</h2>
+    <p>This dashboard is restricted to approved accounts. Sign in with the Google account the admin added for you.</p>
+    <button class="btn" id="gateSignInBtn">Sign in with Google</button>
+  </div>
+
+  <div id="pendingGate" class="empty" style="display:none;">
+    <h2>Access pending</h2>
+    <p id="pendingText">Your account isn't on the approved list yet. Ask the admin to add you, then click Refresh.</p>
+    <button class="btn secondary" id="pendingRefreshBtn">Refresh</button>
+    <button class="btn secondary" id="pendingSignOutBtn">Sign out</button>
+  </div>
+
   <div id="emptyState" class="empty" style="display:none;">
     <h2>No report uploaded yet</h2>
     <p id="emptyStateText">Waiting for the admin to add today's report.</p>
@@ -210,7 +234,7 @@ var fsdb = firebase.firestore();
 var COLLECTION = 'occupancy';
 
 (function(){
-  var state = { summary: null, rows: [], hasUnitAccess: false, isAdmin: false };
+  var state = { summary: null, rows: [], hasUnitAccess: false, isAdmin: false, authUser: null, approved: null };
 
   var HEADER_MAP = {
     'docentry':'docEntry','unitcode':'unitCode','propertycode':'propertyCode',
@@ -307,7 +331,14 @@ var COLLECTION = 'occupancy';
     refreshBtn: document.getElementById('refreshBtn'),
     emptyStateText: document.getElementById('emptyStateText'),
     signInBtn: document.getElementById('signInBtn'),
-    adminChip: document.getElementById('adminChip')
+    adminChip: document.getElementById('adminChip'),
+    signedOutGate: document.getElementById('signedOutGate'),
+    pendingGate: document.getElementById('pendingGate'),
+    pendingText: document.getElementById('pendingText'),
+    manageAccessBtn: document.getElementById('manageAccessBtn'),
+    accessPanel: document.getElementById('accessPanel'),
+    accessList: document.getElementById('accessList'),
+    accessEmailInput: document.getElementById('accessEmailInput')
   };
 
   function fmtDate(d){
@@ -417,22 +448,45 @@ var COLLECTION = 'occupancy';
     var isAdmin = !!state.isAdmin;
     els.uploadBtn.style.display = isAdmin ? '' : 'none';
     els.uploadBtnEmpty.style.display = isAdmin ? '' : 'none';
+    els.manageAccessBtn.style.display = isAdmin ? '' : 'none';
     els.emptyStateText.textContent = isAdmin
       ? 'Upload today\'s Excel export, or drag the file anywhere onto this page.'
       : 'Waiting for the admin to add today\'s report. Click Refresh to check again.';
     if (auth.currentUser){
       els.adminChip.innerHTML = isAdmin
         ? '<span>Signed in as <b>' + escapeHtml(auth.currentUser.email) + '</b> (admin)</span> <button class="btn secondary" id="signOutBtn">Sign out</button>'
-        : '<span>Signed in as ' + escapeHtml(auth.currentUser.email) + ' (viewer)</span> <button class="btn secondary" id="signOutBtn">Sign out</button>';
+        : '<span>Signed in as ' + escapeHtml(auth.currentUser.email) + '</span> <button class="btn secondary" id="signOutBtn">Sign out</button>';
       var so = document.getElementById('signOutBtn');
       if (so) so.addEventListener('click', function(){ auth.signOut(); });
     } else {
-      els.adminChip.innerHTML = '<button class="btn secondary" id="signInBtn">Admin sign-in</button>';
+      els.adminChip.innerHTML = '<button class="btn secondary" id="signInBtn">Sign in</button>';
       document.getElementById('signInBtn').addEventListener('click', signIn);
+      els.accessPanel.style.display = 'none';
     }
   }
 
+  function accessState(){
+    if (!state.authUser) return 'signedout';
+    if (state.isAdmin || state.approved === true) return 'ok';
+    if (state.approved === false) return 'pending';
+    return 'checking';
+  }
+
   function renderAll(){
+    var as = accessState();
+    els.signedOutGate.style.display = (as === 'signedout') ? '' : 'none';
+    els.pendingGate.style.display = (as === 'pending' || as === 'checking') ? '' : 'none';
+    if (as === 'checking') els.pendingText.textContent = 'Checking your access…';
+    else if (as === 'pending') els.pendingText.textContent = "Your account isn't on the approved list yet. Ask the admin to add you, then click Refresh.";
+
+    if (as !== 'ok'){
+      els.empty.style.display = 'none';
+      els.dash.style.display = 'none';
+      els.updatedBlock.style.display = 'none';
+      els.downloadBtn.style.display = 'none';
+      return;
+    }
+
     var s = state.summary;
     if (!s){
       els.empty.style.display = '';
@@ -554,11 +608,70 @@ var COLLECTION = 'occupancy';
     var provider = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(provider).catch(function(err){ alert('Sign-in failed: ' + err.message); });
   }
+  document.getElementById('gateSignInBtn').addEventListener('click', signIn);
+  document.getElementById('pendingSignOutBtn').addEventListener('click', function(){ auth.signOut(); });
+  document.getElementById('pendingRefreshBtn').addEventListener('click', function(){
+    state.approved = null; renderAll();
+    trySubscribeSummary();
+  });
+
+  // ---------- manage access (admin only) ----------
+  els.manageAccessBtn.addEventListener('click', function(){
+    els.accessPanel.style.display = (els.accessPanel.style.display === 'none') ? '' : 'none';
+  });
+  function renderAccessList(emails){
+    if (!emails.length){
+      els.accessList.innerHTML = '<div style="color:var(--ink-soft);">No approved viewers yet.</div>';
+      return;
+    }
+    els.accessList.innerHTML = emails.map(function(e){
+      return '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:var(--surface-soft); border-radius:3px;">' +
+        '<span>' + escapeHtml(e) + '</span>' +
+        '<button class="reset-link" data-email="' + escapeHtml(e) + '">Remove</button>' +
+        '</div>';
+    }).join('');
+    Array.prototype.forEach.call(els.accessList.querySelectorAll('button[data-email]'), function(btn){
+      btn.addEventListener('click', function(){ removeAccess(btn.getAttribute('data-email')); });
+    });
+  }
+  function addAccess(){
+    var email = els.accessEmailInput.value.trim().toLowerCase();
+    if (!email || email.indexOf('@') === -1){ alert('Enter a valid email address.'); return; }
+    fsdb.collection('config').doc('access').set({
+      viewers: firebase.firestore.FieldValue.arrayUnion(email)
+    }, {merge:true}).then(function(){ els.accessEmailInput.value = ''; })
+      .catch(function(err){ alert('Could not add: ' + err.message); });
+  }
+  function removeAccess(email){
+    fsdb.collection('config').doc('access').set({
+      viewers: firebase.firestore.FieldValue.arrayRemove(email)
+    }, {merge:true}).catch(function(err){ alert('Could not remove: ' + err.message); });
+  }
+  document.getElementById('accessAddBtn').addEventListener('click', addAccess);
+
+  function trySubscribeSummary(){
+    if (unsubSummary){ unsubSummary(); unsubSummary = null; }
+    unsubSummary = fsdb.collection(COLLECTION).doc('summary').onSnapshot(function(snap){
+      state.approved = true;
+      state.summary = snap.exists ? snap.data() : null;
+      renderAll();
+    }, function(err){
+      console.error('summary subscribe error', err);
+      state.approved = false;
+      state.summary = null;
+      renderAll();
+    });
+  }
 
   function doRefresh(){
     els.refreshBtn.disabled = true;
     var tasks = [ fsdb.collection(COLLECTION).doc('summary').get().then(function(snap){
+      state.approved = true;
       state.summary = snap.exists ? snap.data() : null;
+    }).catch(function(err){
+      console.error('refresh summary error', err);
+      state.approved = false;
+      state.summary = null;
     }) ];
     if (state.isAdmin){
       tasks.push(fsdb.collection(COLLECTION).doc('units').get().then(function(snap){
@@ -575,18 +688,28 @@ var COLLECTION = 'occupancy';
   }
   els.refreshBtn.addEventListener('click', doRefresh);
 
-  // ---------- live shared data ----------
-  fsdb.collection(COLLECTION).doc('summary').onSnapshot(function(snap){
-    state.summary = snap.exists ? snap.data() : null;
-    renderAll();
-  }, function(err){ console.error('summary subscribe error', err); });
+  // ---------- auth state → admin / approved viewer / pending / signed out ----------
+  var unsubSummary = null, unsubUnits = null, unsubAccess = null;
 
-  // ---------- auth state → admin vs viewer ----------
   auth.onAuthStateChanged(function(user){
+    if (unsubSummary){ unsubSummary(); unsubSummary = null; }
+    if (unsubUnits){ unsubUnits(); unsubUnits = null; }
+    if (unsubAccess){ unsubAccess(); unsubAccess = null; }
+
+    state.authUser = user;
     state.isAdmin = !!(user && user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+    state.approved = null;
+    state.summary = null;
+    state.rows = []; state.hasUnitAccess = false;
     applyRoleUI();
+    renderAll();
+
+    if (!user) return;
+
+    trySubscribeSummary();
+
     if (state.isAdmin){
-      fsdb.collection(COLLECTION).doc('units').onSnapshot(function(snap){
+      unsubUnits = fsdb.collection(COLLECTION).doc('units').onSnapshot(function(snap){
         if (snap.exists){
           var data = snap.data();
           state.rows = Array.isArray(data.rows) ? data.rows : [];
@@ -594,10 +717,12 @@ var COLLECTION = 'occupancy';
         } else { state.rows = []; state.hasUnitAccess = false; }
         renderAll();
       }, function(err){ console.error('units subscribe error', err); state.rows=[]; state.hasUnitAccess=false; renderAll(); });
-    } else {
-      state.rows = []; state.hasUnitAccess = false;
+
+      unsubAccess = fsdb.collection('config').doc('access').onSnapshot(function(snap){
+        var emails = (snap.exists && Array.isArray(snap.data().viewers)) ? snap.data().viewers : [];
+        renderAccessList(emails);
+      }, function(err){ console.error('access list subscribe error', err); });
     }
-    renderAll();
   });
 
   applyRoleUI();
